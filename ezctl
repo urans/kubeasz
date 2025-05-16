@@ -149,23 +149,9 @@ function new() {
     cp example/config.yml "clusters/$1/config.yml"
 
     logger debug "set versions"
-    k8sVer=$(grep 'K8S_BIN_VER=v' ezdown|cut -d'v' -f2)
-    calicoVer=$(grep 'calicoVer=' ezdown|cut -d'=' -f2)
-    ciliumVer=$(grep 'ciliumVer=' ezdown|cut -d'=' -f2)
-    flannelVer=$(grep 'flannelVer=' ezdown|cut -d'=' -f2)
-    kubeRouterVer=$(grep 'kubeRouterVer=' ezdown|cut -d'=' -f2)
-    kubeOvnVer=$(grep 'kubeOvnVer=' ezdown|cut -d'=' -f2)
-    corednsVer=$(grep 'corednsVer=' ezdown|cut -d'=' -f2)
-    dnsNodeCacheVer=$(grep 'dnsNodeCacheVer=' ezdown|cut -d'=' -f2)
-    dashboardVer=$(grep 'dashboardVer=' ezdown|cut -d'=' -f2)
-    dashboardMetricsScraperVer=$(grep 'dashboardMetricsScraperVer=' ezdown|cut -d'=' -f2)
-    metricsVer=$(grep 'metricsVer=' ezdown|cut -d'=' -f2)
-    localpathProvisionerVer=$(grep 'localpathProvisionerVer=' ezdown|cut -d'=' -f2)
-    nfsProvisionerVer=$(grep 'nfsProvisionerVer=' ezdown|cut -d'=' -f2)
-    pauseVer=$(grep 'pauseVer=' ezdown|cut -d'=' -f2)
-    promChartVer=$(grep 'promChartVer=' ezdown|cut -d'=' -f2)
-    kubeappsVer=$(grep 'kubeappsVer=' ezdown|cut -d'=' -f2)
-    harborVer=$(grep 'HARBOR_VER=' ezdown|cut -d'=' -f2)
+    # these variables were imported with eval and have the same name in ezdown
+    eval $(sed '/[ver|VER]=.*\./!d' ezdown)
+    k8sVer=$(echo "$K8S_BIN_VER"|sed 's/v//g')
     registryMirror=true
 
     grep registry-mirrors /etc/docker/daemon.json > /dev/null 2>&1 || { logger debug "disable registry mirrors"; registryMirror=false; }
@@ -180,12 +166,11 @@ function new() {
 	   -e "s/__pause__/$pauseVer/g" \
 	   -e "s/__dns_node_cache__/$dnsNodeCacheVer/g" \
 	   -e "s/__dashboard__/$dashboardVer/g" \
-	   -e "s/__dash_metrics__/$dashboardMetricsScraperVer/g" \
 	   -e "s/__local_path_provisioner__/$localpathProvisionerVer/g" \
 	   -e "s/__nfs_provisioner__/$nfsProvisionerVer/g" \
 	   -e "s/__prom_chart__/$promChartVer/g" \
 	   -e "s/__kubeapps_chart__/$kubeappsVer/g" \
-	   -e "s/__harbor__/$harborVer/g" \
+	   -e "s/__harbor__/$HARBOR_VER/g" \
 	   -e "s/^ENABLE_MIRROR_REGISTRY.*$/ENABLE_MIRROR_REGISTRY: $registryMirror/g" \
 	   -e "s/__metrics__/$metricsVer/g" "clusters/$1/config.yml"
 
@@ -365,6 +350,9 @@ function add-master() {
     logger info "start to add a master node:$2 into cluster:$1"
     ansible-playbook -i "$BASE/clusters/$1/hosts" "$BASE/playbooks/23.addmaster.yml" -e "NODE_TO_ADD=$2" -e "@clusters/$1/config.yml"
 
+    logger info "re-setting /etc/hosts for all nodes"
+    ansible-playbook -i "$BASE/clusters/$1/hosts" "$BASE/playbooks/90.setup.yml" -t set_hosts -e "@clusters/$1/config.yml"
+
     logger info "reconfigure and restart 'kube-lb' service"
     ansible-playbook -i "$BASE/clusters/$1/hosts" "$BASE/playbooks/90.setup.yml" -t restart_kube-lb -e "@clusters/$1/config.yml"
 
@@ -428,6 +416,8 @@ function del-master() {
     # check if the deleting master exsited
     sed -n '/^\[kube_master/,/^\[kube_node/p' "$BASE/clusters/$1/hosts"|grep -E "^$2$|^$2 " || { logger error "master $2 not existed!"; return 2; }
 
+    NODE_NAME=$(bin/kubectl --kubeconfig="clusters/$1/kubectl.kubeconfig" get node -owide|grep " $2 "|awk '{print $1}')
+
     logger warn "start to delete the master:$2 from cluster:$1"
     ansible-playbook -i "$BASE/clusters/$1/hosts" "$BASE/playbooks/33.delmaster.yml" -e "NODE_TO_DEL=$2" -e "CLUSTER=$1" -e "@clusters/$1/config.yml"
 
@@ -439,6 +429,9 @@ function del-master() {
 
     logger info "reconfigure and restart 'ex-lb' service"
     ansible-playbook -i "$BASE/clusters/$1/hosts" "$BASE/playbooks/10.ex-lb.yml" -t restart_lb -e "@clusters/$1/config.yml"
+
+    logger info "delete the master-node: $NODE_NAME"
+    bin/kubectl --kubeconfig="clusters/$1/kubectl.kubeconfig" delete node "$NODE_NAME"
 }
 
 
